@@ -244,9 +244,7 @@ func readSlice(lr *io.LimitedReader, v reflect.Value) (err error) {
 		ne := reflect.New(v.Type().Elem())
 		nsl := reflect.Append(v, reflect.Indirect(ne))
 		v.Set(nsl)
-		if err == nil {
-			err = readStruct(lr, v.Index(vl))
-		}
+		err = readStruct(lr, v.Index(vl))
 	default:
 		err = errors.New("Unknown slice type: " + v.String())
 	}
