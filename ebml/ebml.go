@@ -1,3 +1,8 @@
+// Copyright 2011 The ebml-go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+
 // Package ebml decodes EBML data.
 //
 // EBML is short for Extensible Binary Meta Language. EBML specifies a
