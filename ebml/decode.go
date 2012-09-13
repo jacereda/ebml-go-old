@@ -207,10 +207,14 @@ func readField(r io.Reader, v reflect.Value) (err error) {
 		s, err = ReadString(r)
 		v.SetString(s)
 	case reflect.Int:
+		fallthrough
+	case reflect.Int64:
 		var u uint64
 		u, err = ReadUint64(r)
 		v.SetInt(int64(u))
 	case reflect.Uint:
+		fallthrough
+	case reflect.Uint64:
 		var u uint64
 		u, err = ReadUint64(r)
 		v.SetUint(u)
