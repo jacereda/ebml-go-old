@@ -157,7 +157,7 @@ func getTag(f reflect.StructField, s string) uint {
 
 func lookup(reqid uint, t reflect.Type) int {
 	for i, l := 0, t.NumField(); i < l; i++ {
-		if getTag(t.Field(i), "id") == reqid {
+		if getTag(t.Field(i), "ebml") == reqid {
 			return i
 		}
 	}
