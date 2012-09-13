@@ -45,7 +45,6 @@ func readVint(r io.Reader) (val uint64, err error, rem int) {
 }
 
 // ReadUint reads an EBML-encoded ElementID from r.
-// Returs the value read and any error encountered.
 func ReadID(r io.Reader) (id uint, err error) {
 	var uid uint64
 	uid, err, _ = readVint(r)
@@ -54,7 +53,6 @@ func ReadID(r io.Reader) (id uint, err error) {
 }
 
 // ReadUint reads an EBML-encoded size from r.
-// Returs the value read and any error encountered.
 func ReadSize(r io.Reader) (int64, error) {
 	val, err, rem := readVint(r)
 	return int64(val & ^(128 << uint(rem*8-rem))), err
@@ -71,7 +69,6 @@ func readFixed(r io.Reader, sz int) (val uint64, err error) {
 }
 
 // ReadUint reads an EBML-encoded uint64 from r.
-// Returs the value read and any error encountered.
 func ReadUint64(r io.Reader) (val uint64, err error) {
 	var sz int64
 	sz, err = ReadSize(r)
@@ -82,7 +79,6 @@ func ReadUint64(r io.Reader) (val uint64, err error) {
 }
 
 // ReadUint reads an EBML-encoded uint from r.
-// Returs the value read and any error encountered.
 func ReadUint(r io.Reader) (uint, error) {
 	val, err := ReadUint64(r)
 	return uint(val), err
@@ -95,7 +91,6 @@ func readSizedString(r io.Reader, sz int64) (string, error) {
 }
 
 // ReadString reads an EBML-encoded string from r.
-// Returs the value read and any error encountered.
 func ReadString(r io.Reader) (s string, err error) {
 	var sz int64
 	sz, err = ReadSize(r)
@@ -106,7 +101,6 @@ func ReadString(r io.Reader) (s string, err error) {
 }
 
 // ReadFloat reads an EBML-encoded float64 from r.
-// Returs the value read and any error encountered.
 func ReadFloat(r io.Reader) (val float64, err error) {
 	var sz int64
 	var uval uint64
@@ -127,7 +121,6 @@ func Skip(r io.Reader) (err error) {
 }
 
 // Locate skips elements until it finds the required ElementID.
-// Returs the size of the element and any error found.
 func Locate(r io.Reader, reqid uint) (sz int64, err error) {
 	var id uint
 	for id != reqid && err == nil {
