@@ -21,6 +21,12 @@ import (
 	"strconv"
 )
 
+type ReachedPayloadError uint
+
+func (r ReachedPayloadError) Error() string {
+	return "Reached payload " + strconv.Itoa(int(r))
+}
+
 func remaining(x int8) (rem int) {
 	for x > 0 {
 		rem++
@@ -100,6 +106,21 @@ func ReadString(r io.Reader) (s string, err error) {
 	return
 }
 
+func readSizedData(r io.Reader, sz int64) (d []byte, err error) {
+	d = make([]uint8, sz, sz)
+	_,err = io.ReadFull(r, d)
+	return
+}
+
+func ReadData(r io.Reader) (d []byte, err error) {
+	var sz int64
+	sz, err = ReadSize(r)
+	if err == nil {
+		d,err = readSizedData(r, sz)
+	}
+	return
+}
+
 // ReadFloat reads an EBML-encoded float64 from r.
 func ReadFloat(r io.Reader) (val float64, err error) {
 	var sz int64
@@ -116,21 +137,25 @@ func ReadFloat(r io.Reader) (val float64, err error) {
 
 // Skip skips the next element in r.
 func Skip(r io.Reader) (err error) {
-	_, err = ReadString(r)
+	_, err = ReadData(r)
 	return
 }
 
 // Locate skips elements until it finds the required ElementID.
-func Locate(r io.Reader, reqid uint) (sz int64, err error) {
+func Locate(r io.Reader, reqid uint) (err error) {
 	var id uint
-	for id != reqid && err == nil {
+	for {
 		id, err = ReadID(r)
-		if err == nil {
-			sz, err = ReadSize(r)
+		if err != nil {
+			return
 		}
-	}
-	if id != reqid {
-		err = errors.New("Unable to find ID " + string(reqid))
+		if id == reqid {
+			return
+		}
+		err = Skip(r)
+		if err != nil {
+			return
+		}
 	}
 	return
 }
@@ -150,8 +175,9 @@ func getTag(f reflect.StructField, s string) uint {
 
 func lookup(reqid uint, t reflect.Type) int {
 	for i, l := 0, t.NumField(); i < l; i++ {
-		if getTag(t.Field(i), "ebml") == reqid {
-			return i
+		f := t.Field(i)
+		if getTag(f, "ebml") == reqid {
+			return i - 1000000 * int(getTag(f, "ebmlstop"))
 		}
 	}
 	return -1
@@ -175,10 +201,12 @@ func readStruct(r io.Reader, v reflect.Value) (err error) {
 			break
 		}
 		i := lookup(id, v.Type())
-		if i >= 0 {
+		if (i >= 0) {
 			err = readField(r, v.Field(i))
-		} else {
+		} else if i == -1 {
 			err = Skip(r)
+		} else {
+			err = ReachedPayloadError(id)
 		}
 	}
 	return
@@ -233,9 +261,11 @@ func readField(r io.Reader, v reflect.Value) (err error) {
 func readSlice(lr *io.LimitedReader, v reflect.Value) (err error) {
 	switch v.Type().Elem().Kind() {
 	case reflect.Uint8:
-		sl := make([]uint8, lr.N, lr.N)
-		io.ReadFull(lr, sl)
-		v.Set(reflect.ValueOf(sl))
+		var sl []uint8
+		sl, err = readSizedData(lr, lr.N)
+		if err == nil {
+			v.Set(reflect.ValueOf(sl))
+		}
 	case reflect.Struct:
 		vl := v.Len()
 		ne := reflect.New(v.Type().Elem())
