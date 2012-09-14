@@ -19,7 +19,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-"fmt"
 )
 
 
@@ -206,13 +205,11 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 			break;
 		}
 		i := lookup(ne.Id, v.Type())
-		fmt.Printf("field %x %v %v r: %d %d\n", ne.Id, v, i, e.Size(), ne.Size())
 		if (i >= 0) {
 			err = ne.readField(v.Field(i))
 		} else if i == -1 {
 			err = ne.Skip()
 		} else {
-			fmt.Println("reached terminator", e, ne)
 			err = ReachedPayloadError{e, ne}
 		}
 	}
