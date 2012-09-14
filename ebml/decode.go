@@ -19,12 +19,32 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+"fmt"
 )
 
-type ReachedPayloadError uint
 
+type ReachedPayloadError struct {
+	P *Element
+	E *Element
+}
+ 
 func (r ReachedPayloadError) Error() string {
-	return "Reached payload " + strconv.Itoa(int(r))
+	return "Reached payload"
+}
+
+type Element struct {
+	R io.Reader
+	Id uint
+}
+
+func (e *Element) Size() int64 {
+	lr := e.R.(*io.LimitedReader)
+	return lr.N
+}
+
+func RootElement(r io.Reader) (*Element, error) {
+	e := &Element{io.LimitReader(r, math.MaxInt64), 0}
+	return e,nil
 }
 
 func remaining(x int8) (rem int) {
@@ -51,23 +71,39 @@ func readVint(r io.Reader) (val uint64, err error, rem int) {
 }
 
 // ReadUint reads an EBML-encoded ElementID from r.
-func ReadID(r io.Reader) (id uint, err error) {
+func readID(r io.Reader) (id uint, err error) {
 	var uid uint64
 	uid, err, _ = readVint(r)
 	id = uint(uid)
 	return
 }
 
-// ReadUint reads an EBML-encoded size from r.
-func ReadSize(r io.Reader) (int64, error) {
+func readSize(r io.Reader) (int64, error) {
 	val, err, rem := readVint(r)
 	return int64(val & ^(128 << uint(rem*8-rem))), err
 }
 
-func readFixed(r io.Reader, sz int) (val uint64, err error) {
+func (e *Element) Next() (*Element, error) {
+	var ne Element
+	id,err := readID(e.R)
+	if err != nil {
+		return nil,err
+	}
+	var sz int64
+	sz,err = readSize(e.R)
+	if err != nil {
+		return nil,err
+	}
+	ne.R = io.LimitReader(e.R, sz)
+	ne.Id = id
+	return &ne,err
+}
+
+func readFixed(r io.Reader, sz int64) (val uint64, err error) {
 	x := make([]uint8, sz)
 	_, err = io.ReadFull(r, x)
-	for i := 0; i < sz; i++ {
+	var i int64
+	for i = 0; i < sz; i++ {
 		val <<= 8
 		val += uint64(x[i])
 	}
@@ -75,18 +111,13 @@ func readFixed(r io.Reader, sz int) (val uint64, err error) {
 }
 
 // ReadUint reads an EBML-encoded uint64 from r.
-func ReadUint64(r io.Reader) (val uint64, err error) {
-	var sz int64
-	sz, err = ReadSize(r)
-	if err == nil {
-		val, err = readFixed(r, int(sz))
-	}
-	return
+func (e *Element) ReadUint64() (uint64, error) {
+	return readFixed(e.R, e.Size())
 }
 
 // ReadUint reads an EBML-encoded uint from r.
-func ReadUint(r io.Reader) (uint, error) {
-	val, err := ReadUint64(r)
+func (e *Element) ReadUint() (uint, error) {
+	val, err := e.ReadUint64()
 	return uint(val), err
 }
 
@@ -97,37 +128,23 @@ func readSizedString(r io.Reader, sz int64) (string, error) {
 }
 
 // ReadString reads an EBML-encoded string from r.
-func ReadString(r io.Reader) (s string, err error) {
-	var sz int64
-	sz, err = ReadSize(r)
-	if err == nil {
-		s, err = readSizedString(r, sz)
-	}
-	return
+func (e *Element) ReadString() (string, error) {
+	s,err := e.ReadData()
+	return string(s), err
 }
 
-func readSizedData(r io.Reader, sz int64) (d []byte, err error) {
+func (e *Element) ReadData() (d []byte, err error) {
+	sz := e.Size()
 	d = make([]uint8, sz, sz)
-	_,err = io.ReadFull(r, d)
-	return
-}
-
-func ReadData(r io.Reader) (d []byte, err error) {
-	var sz int64
-	sz, err = ReadSize(r)
-	if err == nil {
-		d,err = readSizedData(r, sz)
-	}
+	_,err = io.ReadFull(e.R, d)
 	return
 }
 
 // ReadFloat reads an EBML-encoded float64 from r.
-func ReadFloat(r io.Reader) (val float64, err error) {
-	var sz int64
+func (e *Element) ReadFloat() (val float64, err error) {
 	var uval uint64
-	sz, err = ReadSize(r)
-	uval, err = readFixed(r, int(sz))
-	if sz == 8 {
+	uval, err = e.ReadUint64()
+	if e.Size() == 8 {
 		val = math.Float64frombits(uval)
 	} else {
 		val = float64(math.Float32frombits(uint32(uval)))
@@ -136,23 +153,20 @@ func ReadFloat(r io.Reader) (val float64, err error) {
 }
 
 // Skip skips the next element in r.
-func Skip(r io.Reader) (err error) {
-	_, err = ReadData(r)
+func (e *Element) Skip() (err error) {
+	_, err = e.ReadData()
 	return
 }
 
 // Locate skips elements until it finds the required ElementID.
-func Locate(r io.Reader, reqid uint) (err error) {
-	var id uint
+func (e *Element) Locate(reqid uint) (err error) {
+	var ne *Element
 	for {
-		id, err = ReadID(r)
-		if err != nil {
+		ne, err = e.Next()
+		if ne.Id == reqid {
 			return
 		}
-		if id == reqid {
-			return
-		}
-		err = Skip(r)
+		err = ne.Skip()
 		if err != nil {
 			return
 		}
@@ -163,8 +177,8 @@ func Locate(r io.Reader, reqid uint) (err error) {
 // Read reads EBML data from r into data. Data must be a pointer to a
 // struct. Fields present in the struct but absent in the stream will
 // just keep their zero value.
-func Read(r io.Reader, val interface{}) error {
-	return readStruct(r, reflect.Indirect(reflect.ValueOf(val)))
+func (e *Element)Unmarshal(val interface{}) (error) {
+	return e.readStruct(reflect.Indirect(reflect.ValueOf(val)))
 }
 
 func getTag(f reflect.StructField, s string) uint {
@@ -183,74 +197,59 @@ func lookup(reqid uint, t reflect.Type) int {
 	return -1
 }
 
-func sectionReader(r io.Reader) (sr io.Reader, err error) {
-	var sz int64
-	sz, err = ReadSize(r)
-	if err == nil {
-		sr = io.LimitReader(r, sz)
-	}
-	return
-}
-
-func readStruct(r io.Reader, v reflect.Value) (err error) {
+func (e *Element) readStruct(v reflect.Value) (err error) {
 	for err == nil {
-		var id uint
-		id, err = ReadID(r)
+		var ne *Element
+		ne,err = e.Next()
 		if err == io.EOF {
-			err = nil
-			break
+			err = nil;
+			break;
 		}
-		i := lookup(id, v.Type())
+		i := lookup(ne.Id, v.Type())
+		fmt.Printf("field %x %v %v r: %d %d\n", ne.Id, v, i, e.Size(), ne.Size())
 		if (i >= 0) {
-			err = readField(r, v.Field(i))
+			err = ne.readField(v.Field(i))
 		} else if i == -1 {
-			err = Skip(r)
+			err = ne.Skip()
 		} else {
-			err = ReachedPayloadError(id)
+			fmt.Println("reached terminator", e, ne)
+			err = ReachedPayloadError{e, ne}
 		}
 	}
 	return
 }
 
-func readField(r io.Reader, v reflect.Value) (err error) {
-	var lr io.Reader
+func (e *Element) readField(v reflect.Value) (err error) {
 	switch v.Kind() {
 	case reflect.Struct:
-		lr, err = sectionReader(r)
-		if err == nil {
-			err = readStruct(lr, v)
-		}
+		err = e.readStruct(v)
 	case reflect.Slice:
-		lr, err = sectionReader(r)
-		if err == nil {
-			err = readSlice(lr.(*io.LimitedReader), v)
-		}
+		err = e.readSlice(v)
 	case reflect.Array:
-		lr, err = sectionReader(r)
 		for i, l := 0, v.Len(); i < l && err == nil; i++ {
-			err = readStruct(lr, v.Index(i))
+			err = e.readStruct(v.Index(i))
 		}
 	case reflect.String:
 		var s string
-		s, err = ReadString(r)
+		s, err = e.ReadString()
 		v.SetString(s)
 	case reflect.Int:
 		fallthrough
 	case reflect.Int64:
 		var u uint64
-		u, err = ReadUint64(r)
+		u, err = e.ReadUint64()
 		v.SetInt(int64(u))
 	case reflect.Uint:
 		fallthrough
 	case reflect.Uint64:
 		var u uint64
-		u, err = ReadUint64(r)
+		u, err = e.ReadUint64()
 		v.SetUint(u)
 	case reflect.Float32:
 		fallthrough
 	case reflect.Float64:
 		var f float64
-		f, err = ReadFloat(r)
+		f, err = e.ReadFloat()
 		v.SetFloat(f)
 	default:
 		err = errors.New("Unknown type: " + v.String())
@@ -258,11 +257,11 @@ func readField(r io.Reader, v reflect.Value) (err error) {
 	return
 }
 
-func readSlice(lr *io.LimitedReader, v reflect.Value) (err error) {
+func (e *Element) readSlice(v reflect.Value) (err error) {
 	switch v.Type().Elem().Kind() {
 	case reflect.Uint8:
 		var sl []uint8
-		sl, err = readSizedData(lr, lr.N)
+		sl, err = e.ReadData()
 		if err == nil {
 			v.Set(reflect.ValueOf(sl))
 		}
@@ -271,7 +270,7 @@ func readSlice(lr *io.LimitedReader, v reflect.Value) (err error) {
 		ne := reflect.New(v.Type().Elem())
 		nsl := reflect.Append(v, reflect.Indirect(ne))
 		v.Set(nsl)
-		err = readStruct(lr, v.Index(vl))
+		err = e.readStruct(v.Index(vl))
 	default:
 		err = errors.New("Unknown slice type: " + v.String())
 	}
