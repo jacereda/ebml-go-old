@@ -23,8 +23,8 @@ import (
 
 
 type ReachedPayloadError struct {
-	P *Element
-	E *Element
+	First *Element
+	Rest *Element
 }
  
 func (r ReachedPayloadError) Error() string {
@@ -210,7 +210,7 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 		} else if i == -1 {
 			err = ne.Skip()
 		} else {
-			err = ReachedPayloadError{e, ne}
+			err = ReachedPayloadError{ne, e}
 		}
 	}
 	return
