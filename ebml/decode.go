@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-
 // Package ebml decodes EBML data.
 //
 // EBML is short for Extensible Binary Meta Language. EBML specifies a
@@ -25,16 +24,16 @@ import (
 // ebmlstop:"1" is reached.
 type ReachedPayloadError struct {
 	First *Element
-	Rest *Element
+	Rest  *Element
 }
- 
+
 func (r ReachedPayloadError) Error() string {
 	return "Reached payload"
 }
 
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	R io.Reader
+	R  io.Reader
 	Id uint
 }
 
@@ -47,7 +46,7 @@ func (e *Element) Size() int64 {
 // Creates the root element corresponding to the data available in r.
 func RootElement(r io.Reader) (*Element, error) {
 	e := &Element{io.LimitReader(r, math.MaxInt64), 0}
-	return e,nil
+	return e, nil
 }
 
 func remaining(x int8) (rem int) {
@@ -81,22 +80,22 @@ func readSize(r io.Reader) (int64, error) {
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
 	var ne Element
-	id,err,_ := readVint(e.R)
+	id, err, _ := readVint(e.R)
 	if err != nil {
-		return nil,err
+		return nil, err
 	}
 	var sz int64
-	sz,err = readSize(e.R)
+	sz, err = readSize(e.R)
 	if err != nil {
-		return nil,err
+		return nil, err
 	}
 	ne.R = io.LimitReader(e.R, sz)
 	ne.Id = uint(id)
-	return &ne,err
+	return &ne, err
 }
 
 func (e *Element) readUint64() (uint64, error) {
-	d,err := e.ReadData()
+	d, err := e.ReadData()
 	var i int
 	sz := len(d)
 	var val uint64
@@ -113,14 +112,14 @@ func (e *Element) readUint() (uint, error) {
 }
 
 func (e *Element) readString() (string, error) {
-	s,err := e.ReadData()
+	s, err := e.ReadData()
 	return string(s), err
 }
 
 func (e *Element) ReadData() (d []byte, err error) {
 	sz := e.Size()
 	d = make([]uint8, sz, sz)
-	_,err = io.ReadFull(e.R, d)
+	_, err = io.ReadFull(e.R, d)
 	return
 }
 
@@ -146,7 +145,7 @@ func (e *Element) skip() (err error) {
 // Returns an error that can be an io.Error or a ReachedPayloadError
 // containing the first element and the the parent element containing
 // the rest of the elements.
-func (e *Element)Unmarshal(val interface{}) (error) {
+func (e *Element) Unmarshal(val interface{}) error {
 	return e.readStruct(reflect.Indirect(reflect.ValueOf(val)))
 }
 
@@ -160,7 +159,7 @@ func lookup(reqid uint, t reflect.Type) int {
 	for i, l := 0, t.NumField(); i < l; i++ {
 		f := t.Field(i)
 		if getTag(f, "ebml") == reqid {
-			return i - 1000000 * int(getTag(f, "ebmlstop"))
+			return i - 1000000*int(getTag(f, "ebmlstop"))
 		}
 	}
 	return -1
@@ -169,13 +168,13 @@ func lookup(reqid uint, t reflect.Type) int {
 func (e *Element) readStruct(v reflect.Value) (err error) {
 	for err == nil {
 		var ne *Element
-		ne,err = e.Next()
+		ne, err = e.Next()
 		if err == io.EOF {
-			err = nil;
-			break;
+			err = nil
+			break
 		}
 		i := lookup(ne.Id, v.Type())
-		if (i >= 0) {
+		if i >= 0 {
 			err = ne.readField(v.Field(i))
 		} else if i == -1 {
 			err = ne.skip()
