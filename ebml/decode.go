@@ -15,6 +15,7 @@ package ebml
 import (
 	"errors"
 	"io"
+	"log"
 	"math"
 	"reflect"
 	"strconv"
@@ -165,7 +166,81 @@ func lookup(reqid uint, t reflect.Type) int {
 	return -1
 }
 
+func setDefaults(v reflect.Value) {
+	t := v.Type()
+	for i, l := 0, t.NumField(); i < l; i++ {
+		fv := v.Field(i)
+		switch fv.Kind() {
+		case reflect.Int:
+			fallthrough
+		case reflect.Int8:
+			fallthrough
+		case reflect.Int16:
+			fallthrough
+		case reflect.Int32:
+			fallthrough
+		case reflect.Int64:
+			fallthrough
+		case reflect.Uint:
+			fallthrough
+		case reflect.Uint8:
+			fallthrough
+		case reflect.Uint16:
+			fallthrough
+		case reflect.Uint32:
+			fallthrough
+		case reflect.Uint64:
+			fallthrough
+		case reflect.Float32:
+			fallthrough
+		case reflect.Float64:
+			fallthrough
+		case reflect.String:
+			setFieldDefaults(fv, t.Field(i))
+		case reflect.Array:
+			fallthrough
+		case reflect.Struct:
+			fallthrough
+		case reflect.Slice:
+			break
+		default:
+			log.Panic("Unsupported type")
+		}
+	}
+}
+
+func setFieldDefaults(v reflect.Value, sf reflect.StructField) {
+	if v.CanInterface() && reflect.DeepEqual(
+		v.Interface(), reflect.Zero(v.Type()).Interface()) {
+		tag := sf.Tag.Get("ebmldef")
+		if tag != "" {
+			switch v.Kind() {
+			case reflect.Int:
+				fallthrough
+			case reflect.Int64:
+				u, _ := strconv.ParseInt(tag, 10, 0)
+				v.SetInt(int64(u))
+			case reflect.Uint:
+				fallthrough
+			case reflect.Uint64:
+				u, _ := strconv.ParseUint(tag, 10, 0)
+				v.SetUint(u)
+			case reflect.Float32:
+				fallthrough
+			case reflect.Float64:
+				f, _ := strconv.ParseFloat(tag, 64)
+				v.SetFloat(f)
+			case reflect.String:
+				v.SetString(tag)
+			default:
+				log.Panic("Unsupported default value")
+			}
+		}
+	}
+}
+
 func (e *Element) readStruct(v reflect.Value) (err error) {
+	t := v.Type()
 	for err == nil {
 		var ne *Element
 		ne, err = e.Next()
@@ -173,7 +248,7 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 			err = nil
 			break
 		}
-		i := lookup(ne.Id, v.Type())
+		i := lookup(ne.Id, t)
 		if i >= 0 {
 			err = ne.readField(v.Field(i))
 		} else if i == -1 {
@@ -182,6 +257,7 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 			err = ReachedPayloadError{ne, e}
 		}
 	}
+	setDefaults(v)
 	return
 }
 
