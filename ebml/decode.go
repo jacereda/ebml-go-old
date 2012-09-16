@@ -196,7 +196,7 @@ func setDefaults(v reflect.Value) {
 		case reflect.Float64:
 			fallthrough
 		case reflect.String:
-			setFieldDefaults(fv, t.Field(i))
+			setFieldDefaults(fv, t.Field(i), v)
 		case reflect.Array:
 			fallthrough
 		case reflect.Struct:
@@ -209,7 +209,7 @@ func setDefaults(v reflect.Value) {
 	}
 }
 
-func setFieldDefaults(v reflect.Value, sf reflect.StructField) {
+func setFieldDefaults(v reflect.Value, sf reflect.StructField, s reflect.Value) {
 	if v.CanInterface() && reflect.DeepEqual(
 		v.Interface(), reflect.Zero(v.Type()).Interface()) {
 		tag := sf.Tag.Get("ebmldef")
@@ -235,6 +235,10 @@ func setFieldDefaults(v reflect.Value, sf reflect.StructField) {
 			default:
 				log.Panic("Unsupported default value")
 			}
+		}
+		ltag := sf.Tag.Get("ebmldeflink")
+		if ltag != "" {
+			v.Set(s.FieldByName(ltag))
 		}
 	}
 }
