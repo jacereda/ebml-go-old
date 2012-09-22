@@ -19,6 +19,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"fmt"
 )
 
 // ReachedPayloadError is generated when a field tagged with
@@ -36,6 +37,10 @@ func (r ReachedPayloadError) Error() string {
 type Element struct {
 	R  io.Reader
 	Id uint
+}
+
+func (e *Element) String() string {
+	return fmt.Sprintf("{%+v %x}", e.R, e.Id)
 }
 
 // Size returns the size of the element.
