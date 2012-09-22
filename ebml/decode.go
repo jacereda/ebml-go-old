@@ -14,12 +14,12 @@ package ebml
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
 	"reflect"
 	"strconv"
-	"fmt"
 )
 
 // ReachedPayloadError is generated when a field tagged with
