@@ -132,8 +132,9 @@ func (e *Element) ReadData() (d []byte, err error) {
 
 func (e *Element) readFloat() (val float64, err error) {
 	var uval uint64
+	sz := e.Size()
 	uval, err = e.readUint64()
-	if e.Size() == 8 {
+	if sz == 8 {
 		val = math.Float64frombits(uval)
 	} else {
 		val = float64(math.Float32frombits(uint32(uval)))
