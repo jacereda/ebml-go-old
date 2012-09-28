@@ -178,10 +178,10 @@ func setDefaults(v reflect.Value) {
 	for i, l := 0, t.NumField(); i < l; i++ {
 		fv := v.Field(i)
 		switch fv.Kind() {
-		case reflect.Int, reflect.Uint, 
-			reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, 
-			reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, 
-			reflect.Float32, reflect.Float64, 
+		case reflect.Int, reflect.Uint,
+			reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64,
 			reflect.String:
 			setFieldDefaults(fv, t.Field(i), v)
 		case reflect.Array, reflect.Struct, reflect.Slice:
