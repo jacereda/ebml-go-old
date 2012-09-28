@@ -178,37 +178,13 @@ func setDefaults(v reflect.Value) {
 	for i, l := 0, t.NumField(); i < l; i++ {
 		fv := v.Field(i)
 		switch fv.Kind() {
-		case reflect.Int:
-			fallthrough
-		case reflect.Int8:
-			fallthrough
-		case reflect.Int16:
-			fallthrough
-		case reflect.Int32:
-			fallthrough
-		case reflect.Int64:
-			fallthrough
-		case reflect.Uint:
-			fallthrough
-		case reflect.Uint8:
-			fallthrough
-		case reflect.Uint16:
-			fallthrough
-		case reflect.Uint32:
-			fallthrough
-		case reflect.Uint64:
-			fallthrough
-		case reflect.Float32:
-			fallthrough
-		case reflect.Float64:
-			fallthrough
-		case reflect.String:
+		case reflect.Int, reflect.Uint, 
+			reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, 
+			reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, 
+			reflect.Float32, reflect.Float64, 
+			reflect.String:
 			setFieldDefaults(fv, t.Field(i), v)
-		case reflect.Array:
-			fallthrough
-		case reflect.Struct:
-			fallthrough
-		case reflect.Slice:
+		case reflect.Array, reflect.Struct, reflect.Slice:
 			break
 		default:
 			log.Panic("Unsupported type")
@@ -222,19 +198,13 @@ func setFieldDefaults(v reflect.Value, sf reflect.StructField, s reflect.Value) 
 		tag := sf.Tag.Get("ebmldef")
 		if tag != "" {
 			switch v.Kind() {
-			case reflect.Int:
-				fallthrough
-			case reflect.Int64:
+			case reflect.Int, reflect.Int64:
 				u, _ := strconv.ParseInt(tag, 10, 0)
 				v.SetInt(int64(u))
-			case reflect.Uint:
-				fallthrough
-			case reflect.Uint64:
+			case reflect.Uint, reflect.Uint64:
 				u, _ := strconv.ParseUint(tag, 10, 0)
 				v.SetUint(u)
-			case reflect.Float32:
-				fallthrough
-			case reflect.Float64:
+			case reflect.Float32, reflect.Float64:
 				f, _ := strconv.ParseFloat(tag, 64)
 				v.SetFloat(f)
 			case reflect.String:
@@ -286,21 +256,15 @@ func (e *Element) readField(v reflect.Value) (err error) {
 		var s string
 		s, err = e.readString()
 		v.SetString(s)
-	case reflect.Int:
-		fallthrough
-	case reflect.Int64:
+	case reflect.Int, reflect.Int64:
 		var u uint64
 		u, err = e.readUint64()
 		v.SetInt(int64(u))
-	case reflect.Uint:
-		fallthrough
-	case reflect.Uint64:
+	case reflect.Uint, reflect.Uint64:
 		var u uint64
 		u, err = e.readUint64()
 		v.SetUint(u)
-	case reflect.Float32:
-		fallthrough
-	case reflect.Float64:
+	case reflect.Float32, reflect.Float64:
 		var f float64
 		f, err = e.readFloat()
 		v.SetFloat(f)
