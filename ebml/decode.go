@@ -14,6 +14,7 @@
 package ebml
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -26,8 +27,7 @@ import (
 // ReachedPayloadError is generated when a field tagged with
 // ebmlstop:"1" is reached.
 type ReachedPayloadError struct {
-	First *Element
-	Rest  *Element
+	*Element
 }
 
 func (r ReachedPayloadError) Error() string {
@@ -36,8 +36,9 @@ func (r ReachedPayloadError) Error() string {
 
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	R  io.Reader
-	Id uint
+	R       io.Reader
+	breader *bufio.Reader
+	Id      uint
 }
 
 func (e *Element) String() string {
@@ -52,7 +53,8 @@ func (e *Element) Size() int64 {
 
 // Creates the root element corresponding to the data available in r.
 func RootElement(r io.Reader) (*Element, error) {
-	e := &Element{io.LimitReader(r, math.MaxInt64), 0}
+	br := bufio.NewReader(r)
+	e := &Element{io.LimitReader(br, math.MaxInt64), br, 0}
 	return e, nil
 }
 
@@ -64,17 +66,53 @@ func remaining(x int8) (rem int) {
 	return
 }
 
-func readVint(r io.Reader) (val uint64, err error, rem int) {
-	v := make([]uint8, 1)
-	_, err = io.ReadFull(r, v)
+func parseVint(data []uint8) (val uint64) {
+	for i, l := 0, len(data); i < l; i++ {
+		val <<= 8
+		val += uint64(data[i])
+	}
+	return
+}
+
+func readVintData(r io.Reader) (data []uint8, err error, rem int) {
+	var v [16]uint8
+	_, err = io.ReadFull(r, v[:1])
 	if err == nil {
-		val = uint64(v[0])
-		rem = remaining(int8(val))
-		for i := 0; err == nil && i < rem; i++ {
-			_, err = io.ReadFull(r, v)
-			val <<= 8
-			val += uint64(v[0])
-		}
+		rem = remaining(int8(v[0]))
+		_, err = io.ReadFull(r, v[1:rem+1])
+	}
+	if err == nil {
+		data = v[0 : rem+1]
+	}
+	return
+}
+
+func readVint(r io.Reader) (val uint64, err error, rem int) {
+	var data []uint8
+	data, err, rem = readVintData(r)
+	if err == nil {
+		val = parseVint(data)
+	}
+	return
+}
+
+func peekVintData(r *bufio.Reader) (data []uint8, err error, rem int) {
+	var v []byte
+	v, err = r.Peek(16)
+	if err == nil {
+		rem = remaining(int8(v[0]))
+	}
+	if err == nil {
+		data = v[0 : rem+1]
+	}
+	return
+}
+
+func peekVint(r *bufio.Reader) (val uint64, err error, rem int) {
+	var data []uint8
+	data, err, rem = peekVintData(r)
+	if err == nil {
+		val = parseVint(data)
 	}
 	return
 }
@@ -86,7 +124,6 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
-	var ne Element
 	id, err, _ := readVint(e.R)
 	if err != nil {
 		return nil, err
@@ -96,9 +133,7 @@ func (e *Element) Next() (*Element, error) {
 	if err != nil {
 		return nil, err
 	}
-	ne.R = io.LimitReader(e.R, sz)
-	ne.Id = uint(id)
-	return &ne, err
+	return &Element{io.LimitReader(e.R, sz), e.breader, uint(id)}, err
 }
 
 func (e *Element) readUint64() (uint64, error) {
@@ -151,7 +186,7 @@ func (e *Element) skip() (err error) {
 // to a struct. Fields present in the struct but absent in the stream
 // will just keep their zero value.
 // Returns an error that can be an io.Error or a ReachedPayloadError
-// containing the first element and the the parent element containing
+// containing the first element and the parent element containing
 // the rest of the elements.
 func (e *Element) Unmarshal(val interface{}) error {
 	return e.readStruct(reflect.Indirect(reflect.ValueOf(val)))
@@ -224,18 +259,25 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 	t := v.Type()
 	for err == nil {
 		var ne *Element
-		ne, err = e.Next()
-		if err == io.EOF {
-			err = nil
-			break
+		var id uint64
+		id, err, _ = peekVint(e.breader)
+		i := lookup(uint(id), t)
+		if i >= -1 {
+			ne, err = e.Next()
 		}
-		i := lookup(ne.Id, t)
 		if i >= 0 {
-			err = ne.readField(v.Field(i))
+			if err == nil {
+				err = ne.readField(v.Field(i))
+			}
 		} else if i == -1 {
-			err = ne.skip()
+			if err == nil {
+				err = ne.skip()
+			} else if err == io.EOF {
+				err = nil
+				break
+			}
 		} else {
-			err = ReachedPayloadError{ne, e}
+			err = ReachedPayloadError{e}
 		}
 	}
 	setDefaults(v)
