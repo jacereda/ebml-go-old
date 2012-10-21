@@ -304,6 +304,9 @@ func (e *Element) readSlice(v reflect.Value) (err error) {
 		var sl []uint8
 		sl, err = e.ReadData()
 		if err == nil {
+			if !v.CanSet() {
+				log.Panic("can't set ", v, e)
+			}
 			v.Set(reflect.ValueOf(sl))
 		}
 	case reflect.Struct:
