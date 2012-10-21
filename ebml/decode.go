@@ -14,13 +14,11 @@
 package ebml
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
-	"os"
 	"reflect"
 	"strconv"
 )
@@ -35,35 +33,37 @@ func (r ReachedPayloadError) Error() string {
 	return "Reached payload"
 }
 
+type limitedReadSeeker struct {
+	io.LimitedReader
+	io.Seeker
+}
+
+func newLimitedReadSeeker(rs io.ReadSeeker, limit int64) *limitedReadSeeker {
+	return &limitedReadSeeker{io.LimitedReader{rs, limit}, rs}
+}
+
+func (lrs *Element) Seek(offset int64, whence int) (ret int64, err error) {
+	curr, _ := lrs.Seeker.Seek(0, 1)
+	ret, err = lrs.LimitedReader.R.(io.Seeker).Seek(offset, whence)
+	lrs.LimitedReader.N += curr - ret
+	return
+}
+
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	io.Reader
-	rs     io.ReadSeeker
-	br     *bufio.Reader
+	limitedReadSeeker
 	Size   int64
 	Offset int64
 	Id     uint
 }
 
 func (e *Element) String() string {
-	return fmt.Sprintf("{Reader: %+v ReadSeeker: %+v Size: %+v Offset: %+v Id: %x}", e.Reader, e.rs, e.Size, e.Offset, e.Id)
-}
-
-func (e *Element) Seek(offset int64, whence int) (ret int64, err error) {
-	log.Println("seeking0", e, offset)
-	curr, _ := e.rs.Seek(0, os.SEEK_CUR)
-	ret, err = e.rs.Seek(offset, whence)
-	e.br = bufio.NewReader(e.rs)
-	e.Reader = io.LimitReader(e.br, e.Reader.(*io.LimitedReader).N-curr+ret)
-	after, _ := e.rs.Seek(0, os.SEEK_CUR)
-	log.Println("seeking1", e, ret, curr, after)
-	return
+	return fmt.Sprintf("{ReadSeeker: %+v Size: %+v Offset: %+v Id: %x}", e.limitedReadSeeker, e.Size, e.Offset, e.Id)
 }
 
 // Creates the root element corresponding to the data available in r.
 func RootElement(rs io.ReadSeeker) (*Element, error) {
-	br := bufio.NewReader(rs)
-	e := &Element{io.LimitReader(br, math.MaxInt64), rs, br, 0, 0, 0}
+	e := &Element{*newLimitedReadSeeker(rs, math.MaxInt64), 0, 0, 0}
 	return e, nil
 }
 
@@ -105,27 +105,6 @@ func readVint(r io.Reader) (val uint64, err error, rem int) {
 	return
 }
 
-func peekVintData(r *bufio.Reader) (data []uint8, err error, rem int) {
-	var v []byte
-	v, err = r.Peek(16)
-	if err == nil {
-		rem = remaining(int8(v[0]))
-	}
-	if err == nil {
-		data = v[0 : rem+1]
-	}
-	return
-}
-
-func peekVint(r *bufio.Reader) (val uint64, err error, rem int) {
-	var data []uint8
-	data, err, rem = peekVintData(r)
-	if err == nil {
-		val = parseVint(data)
-	}
-	return
-}
-
 func readSize(r io.Reader) (int64, error) {
 	val, err, rem := readVint(r)
 	return int64(val & ^(128 << uint(rem*8-rem))), err
@@ -133,7 +112,7 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
-	off, _ := e.rs.Seek(0, os.SEEK_CUR)
+	off, _ := e.Seek(0, 1)
 	id, err, _ := readVint(e)
 	if err != nil {
 		return nil, err
@@ -143,7 +122,8 @@ func (e *Element) Next() (*Element, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Element{io.LimitReader(e.Reader, sz), e.rs, e.br, sz, off, uint(id)}, err
+	ret := &Element{*newLimitedReadSeeker(e, sz), sz, off, uint(id)}
+	return ret, err
 }
 
 func (e *Element) readUint64() (uint64, error) {
@@ -267,24 +247,18 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 	t := v.Type()
 	for err == nil {
 		var ne *Element
-		var id uint64
-		id, err, _ = peekVint(e.br)
-		i := lookup(uint(id), t)
-		if i >= -1 {
-			ne, err = e.Next()
+		ne, err = e.Next()
+		if err == io.EOF {
+			err = nil
+			break
 		}
+		i := lookup(ne.Id, t)
 		if i >= 0 {
-			if err == nil {
-				err = ne.readField(v.Field(i))
-			}
+			err = ne.readField(v.Field(i))
 		} else if i == -1 {
-			if err == nil {
-				err = ne.skip()
-			} else if err == io.EOF {
-				err = nil
-				break
-			}
+			err = ne.skip()
 		} else {
+			e.Seek(ne.Offset, 0)
 			err = ReachedPayloadError{e}
 		}
 	}
