@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"os"
 	"reflect"
 	"strconv"
 )
@@ -36,25 +37,33 @@ func (r ReachedPayloadError) Error() string {
 
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	R       io.Reader
-	breader *bufio.Reader
-	Id      uint
+	io.Reader
+	rs     io.ReadSeeker
+	br     *bufio.Reader
+	Size   int64
+	Offset int64
+	Id     uint
 }
 
 func (e *Element) String() string {
-	return fmt.Sprintf("{%+v %x}", e.R, e.Id)
+	return fmt.Sprintf("{Reader: %+v ReadSeeker: %+v Size: %+v Offset: %+v Id: %x}", e.Reader, e.rs, e.Size, e.Offset, e.Id)
 }
 
-// Size returns the size of the element.
-func (e *Element) Size() int64 {
-	lr := e.R.(*io.LimitedReader)
-	return lr.N
+func (e *Element) Seek(offset int64, whence int) (ret int64, err error) {
+	log.Println("seeking0", e, offset)
+	curr, _ := e.rs.Seek(0, os.SEEK_CUR)
+	ret, err = e.rs.Seek(offset, whence)
+	e.br = bufio.NewReader(e.rs)
+	e.Reader = io.LimitReader(e.br, e.Reader.(*io.LimitedReader).N-curr+ret)
+	after, _ := e.rs.Seek(0, os.SEEK_CUR)
+	log.Println("seeking1", e, ret, curr, after)
+	return
 }
 
 // Creates the root element corresponding to the data available in r.
-func RootElement(r io.Reader) (*Element, error) {
-	br := bufio.NewReader(r)
-	e := &Element{io.LimitReader(br, math.MaxInt64), br, 0}
+func RootElement(rs io.ReadSeeker) (*Element, error) {
+	br := bufio.NewReader(rs)
+	e := &Element{io.LimitReader(br, math.MaxInt64), rs, br, 0, 0, 0}
 	return e, nil
 }
 
@@ -124,16 +133,17 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
-	id, err, _ := readVint(e.R)
+	off, _ := e.rs.Seek(0, os.SEEK_CUR)
+	id, err, _ := readVint(e)
 	if err != nil {
 		return nil, err
 	}
 	var sz int64
-	sz, err = readSize(e.R)
+	sz, err = readSize(e)
 	if err != nil {
 		return nil, err
 	}
-	return &Element{io.LimitReader(e.R, sz), e.breader, uint(id)}, err
+	return &Element{io.LimitReader(e.Reader, sz), e.rs, e.br, sz, off, uint(id)}, err
 }
 
 func (e *Element) readUint64() (uint64, error) {
@@ -159,15 +169,15 @@ func (e *Element) readString() (string, error) {
 }
 
 func (e *Element) ReadData() (d []byte, err error) {
-	sz := e.Size()
+	sz := e.Size
 	d = make([]uint8, sz, sz)
-	_, err = io.ReadFull(e.R, d)
+	_, err = io.ReadFull(e, d)
 	return
 }
 
 func (e *Element) readFloat() (val float64, err error) {
 	var uval uint64
-	sz := e.Size()
+	sz := e.Size
 	uval, err = e.readUint64()
 	if sz == 8 {
 		val = math.Float64frombits(uval)
@@ -185,9 +195,7 @@ func (e *Element) skip() (err error) {
 // Unmarshal reads EBML data from r into data. Data must be a pointer
 // to a struct. Fields present in the struct but absent in the stream
 // will just keep their zero value.
-// Returns an error that can be an io.Error or a ReachedPayloadError
-// containing the first element and the parent element containing
-// the rest of the elements.
+// Returns an error that can be an io.Error or a ReachedPayloadError.
 func (e *Element) Unmarshal(val interface{}) error {
 	return e.readStruct(reflect.Indirect(reflect.ValueOf(val)))
 }
@@ -260,7 +268,7 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 	for err == nil {
 		var ne *Element
 		var id uint64
-		id, err, _ = peekVint(e.breader)
+		id, err, _ = peekVint(e.br)
 		i := lookup(uint(id), t)
 		if i >= -1 {
 			ne, err = e.Next()
