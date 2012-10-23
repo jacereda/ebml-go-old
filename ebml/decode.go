@@ -38,18 +38,17 @@ func (r ReachedPayloadError) Error() string {
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
 	*limitedReadSeeker
-	Size   int64
 	Offset int64
 	Id     uint
 }
 
 func (e *Element) String() string {
-	return fmt.Sprintf("{ReadSeeker: %+v Size: %+v Offset: %+v Id: %x}", e.limitedReadSeeker, e.Size, e.Offset, e.Id)
+	return fmt.Sprintf("{ReadSeeker: %+v Offset: %+v Id: %x}", e.limitedReadSeeker, e.Offset, e.Id)
 }
 
 // Creates the root element corresponding to the data available in r.
 func RootElement(rs io.ReadSeeker) (*Element, error) {
-	e := &Element{newLimitedReadSeeker(rs, math.MaxInt64), 0, 0, 0}
+	e := &Element{newLimitedReadSeeker(rs, math.MaxInt64), 0, 0}
 	return e, nil
 }
 
@@ -98,6 +97,9 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
+	if Verbose {
+		log.Println("next", e)
+	}
 	off, err := e.Seek(0, 1)
 	if err != nil {
 		log.Panic(err)
@@ -110,11 +112,18 @@ func (e *Element) Next() (*Element, error) {
 	if err != nil {
 		return nil, err
 	}
-	ret := &Element{newLimitedReadSeeker(e, sz), sz, off, uint(id)}
+	ret := &Element{newLimitedReadSeeker(e, sz), off, uint(id)}
 	if Verbose {
-		log.Println("next", ret, err)
+		log.Println("--->", ret)
+	}
+	if id == 0x114D9B74 {
+		log.Println("sh", ret)
 	}
 	return ret, err
+}
+
+func (e *Element) Size() int64 {
+	return e.limitedReadSeeker.N
 }
 
 func (e *Element) readUint64() (uint64, error) {
@@ -140,7 +149,7 @@ func (e *Element) readString() (string, error) {
 }
 
 func (e *Element) ReadData() (d []byte, err error) {
-	sz := e.Size
+	sz := e.Size()
 	d = make([]uint8, sz, sz)
 	_, err = io.ReadFull(e, d)
 	return
@@ -148,7 +157,7 @@ func (e *Element) ReadData() (d []byte, err error) {
 
 func (e *Element) readFloat() (val float64, err error) {
 	var uval uint64
-	sz := e.Size
+	sz := e.Size()
 	uval, err = e.readUint64()
 	if sz == 8 {
 		val = math.Float64frombits(uval)
