@@ -116,9 +116,6 @@ func (e *Element) Next() (*Element, error) {
 	if Verbose {
 		log.Println("--->", ret)
 	}
-	if id == 0x114D9B74 {
-		log.Println("sh", ret)
-	}
 	return ret, err
 }
 
