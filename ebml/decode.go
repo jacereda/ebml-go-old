@@ -23,6 +23,8 @@ import (
 	"strconv"
 )
 
+var Verbose bool = false
+
 // ReachedPayloadError is generated when a field tagged with
 // ebmlstop:"1" is reached.
 type ReachedPayloadError struct {
@@ -33,25 +35,9 @@ func (r ReachedPayloadError) Error() string {
 	return "Reached payload"
 }
 
-type limitedReadSeeker struct {
-	io.LimitedReader
-	io.Seeker
-}
-
-func newLimitedReadSeeker(rs io.ReadSeeker, limit int64) *limitedReadSeeker {
-	return &limitedReadSeeker{io.LimitedReader{rs, limit}, rs}
-}
-
-func (lrs *Element) Seek(offset int64, whence int) (ret int64, err error) {
-	curr, _ := lrs.Seeker.Seek(0, 1)
-	ret, err = lrs.LimitedReader.R.(io.Seeker).Seek(offset, whence)
-	lrs.LimitedReader.N += curr - ret
-	return
-}
-
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	limitedReadSeeker
+	*limitedReadSeeker
 	Size   int64
 	Offset int64
 	Id     uint
@@ -63,7 +49,7 @@ func (e *Element) String() string {
 
 // Creates the root element corresponding to the data available in r.
 func RootElement(rs io.ReadSeeker) (*Element, error) {
-	e := &Element{*newLimitedReadSeeker(rs, math.MaxInt64), 0, 0, 0}
+	e := &Element{newLimitedReadSeeker(rs, math.MaxInt64), 0, 0, 0}
 	return e, nil
 }
 
@@ -112,17 +98,22 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
-	off, _ := e.Seek(0, 1)
+	off, err := e.Seek(0, 1)
+	if err != nil {
+		log.Panic(err)
+	}
 	id, err, _ := readVint(e)
 	if err != nil {
 		return nil, err
 	}
-	var sz int64
-	sz, err = readSize(e)
+	sz, err := readSize(e)
 	if err != nil {
 		return nil, err
 	}
-	ret := &Element{*newLimitedReadSeeker(e, sz), sz, off, uint(id)}
+	ret := &Element{newLimitedReadSeeker(e, sz), sz, off, uint(id)}
+	if Verbose {
+		log.Println("next", ret, err)
+	}
 	return ret, err
 }
 
@@ -258,7 +249,11 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 		} else if i == -1 {
 			err = ne.skip()
 		} else {
-			e.Seek(ne.Offset, 0)
+			var curr int64
+			curr, err = e.Seek(ne.Offset, 0)
+			if err != nil || curr != ne.Offset {
+				log.Panic(err, curr)
+			}
 			err = ReachedPayloadError{e}
 		}
 	}
