@@ -1,7 +1,6 @@
 package main
 
 import (
-	"code.google.com/p/ebml-go/common"
 	"code.google.com/p/ebml-go/webm"
 	"code.google.com/p/portaudio-go/portaudio"
 	"flag"
@@ -9,11 +8,13 @@ import (
 	"github.com/jteeuwen/glfw"
 	"log"
 	"math"
+	"os"
 	"runtime"
 	"time"
 )
 
 var (
+	in         = flag.String("i", "", "Input file")
 	unsync     = flag.Bool("u", false, "Unsynchronized display")
 	notc       = flag.Bool("t", false, "Ignore timecodes")
 	blend      = flag.Bool("b", false, "Blend between images")
@@ -116,7 +117,8 @@ func upload(id gl.Uint, data []byte, stride int, w int, h int) {
 	gl.BindTexture(gl.TEXTURE_2D, id)
 	gl.PixelStorei(gl.UNPACK_ROW_LENGTH, gl.Int(stride))
 	gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.Sizei(w), gl.Sizei(h), 0,
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE,
+		gl.Sizei(w), gl.Sizei(h), 0,
 		gl.LUMINANCE, gl.UNSIGNED_BYTE, gl.Pointer(&data[0]))
 }
 
@@ -152,7 +154,57 @@ func factor(t time.Time, tc0 time.Time, tc1 time.Time) gl.Float {
 	return gl.Float(res)
 }
 
-func vpresent(wchan <-chan webm.Frame) {
+var steps = uint(0xffffffff)
+var seek = webm.BadTC
+var duration = webm.BadTC
+var lasttc = webm.BadTC
+var fduration = webm.BadTC
+
+func tseek(t time.Duration) {
+	seek = t
+	if seek < 0 {
+		seek = 0
+	}
+}
+
+func xseek(x int) {
+	w, _ := glfw.WindowSize()
+	factor := float64(x) / float64(w)
+	tseek(time.Duration(float64(duration) * factor))
+}
+
+func mphandler(x, y int) {
+	if glfw.KeyPress == glfw.MouseButton(glfw.MouseLeft) {
+		xseek(x)
+	}
+}
+
+func mbhandler(button, state int) {
+	if state == glfw.KeyPress {
+		x, _ := glfw.MousePos()
+		xseek(x)
+	}
+}
+
+func khandler(key, state int) {
+	if state == glfw.KeyRelease {
+		switch key {
+		case 'P':
+			steps = 0
+		case 'R':
+			steps = 0xffffffff
+			tseek(lasttc)
+		case 'F':
+			steps = 1
+			tseek(lasttc + fduration)
+		case 'B':
+			steps = 1
+			tseek(lasttc - fduration)
+		}
+	}
+}
+
+func vpresent(wchan <-chan webm.Frame, reader *webm.Reader) {
 	if *blend {
 		ntex = 6
 	} else {
@@ -173,6 +225,9 @@ func vpresent(wchan <-chan webm.Frame) {
 		wh = 900
 	}
 	glfw.OpenWindow(ww, wh, 0, 0, 0, 0, 0, 0, mode)
+	glfw.SetKeyCallback(khandler)
+	glfw.SetMouseButtonCallback(mbhandler)
+	glfw.SetMousePosCallback(mphandler)
 	defer glfw.CloseWindow()
 	glfw.SetWindowSizeCallback(func(ww, wh int) {
 		oaspect := float64(w) / float64(h)
@@ -193,7 +248,7 @@ func vpresent(wchan <-chan webm.Frame) {
 	if !*unsync {
 		glfw.SetSwapInterval(1)
 	}
-	glfw.SetWindowTitle(*common.In)
+	glfw.SetWindowTitle(*in)
 	for i := 0; i < ntex; i++ {
 		texinit(i + 1)
 	}
@@ -202,20 +257,39 @@ func vpresent(wchan <-chan webm.Frame) {
 	gl.Enable(gl.TEXTURE_2D)
 	tbase := time.Now()
 	pimg := img
+
+	flushing := false
 	for glfw.WindowParam(glfw.Opened) == 1 {
+		if seek != webm.BadTC {
+			reader.Seek(seek)
+			seek = webm.BadTC
+			flushing = true
+		}
+
 		gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 		t := time.Now()
-		if *notc || t.After(tbase.Add(img.Timecode)) {
-			var ok bool
+		if flushing || (steps > 0 && (*notc || t.After(tbase.Add(img.Timecode)))) {
 			pimg = img
-			img, ok = <-wchan
+			var ok bool
+			var nimg webm.Frame
+			nimg, ok = <-wchan
 			if !ok {
 				return
 			}
-			if img.Timecode == pimg.Timecode {
+			if nimg.Timecode == pimg.Timecode {
 				log.Println("same timecode", img.Timecode)
 			}
+			if nimg.Rebase {
+				tbase = time.Now().Add(-nimg.Timecode)
+				flushing = false
+			}
+			if !flushing {
+				steps--
+				img = nimg
+			}
 		}
+		lasttc = img.Timecode
+
 		gl.ActiveTexture(gl.TEXTURE0)
 		upload(1, img.Y, img.YStride, w, h)
 		gl.ActiveTexture(gl.TEXTURE1)
@@ -252,7 +326,7 @@ func (aw *AudioWriter) ProcessAudio(in, out []float32) {
 		if aw.sofar == len(aw.curr.Data) {
 			aw.curr, aw.active = <-aw.ch
 			aw.sofar = 0
-			//			log.Println("timecode", aw.curr.Timecode)
+			//log.Println("timecode", aw.curr.Timecode)
 		}
 		s := copy(out[sent:], aw.curr.Data[aw.sofar:])
 		sent += s
@@ -281,13 +355,47 @@ func apresent(wchan <-chan webm.Samples, audio *webm.Audio) {
 
 func main() {
 	flag.Parse()
-	vp := vpresent
-	ap := apresent
-	if *justaudio {
-		vp = nil
+
+	var err error
+	var wm webm.WebM
+	r, err := os.Open(*in)
+	defer r.Close()
+	if err != nil {
+		log.Panic("Unable to open file " + *in)
 	}
-	if *justvideo {
-		ap = nil
+	reader, err := webm.Parse(r, &wm)
+	if err != nil {
+		log.Panic("Unable to parse file:", err)
 	}
-	common.Main(vp, ap)
+	duration = wm.GetDuration()
+
+	splitter := webm.NewSplitter(reader.Chan)
+
+	var vtrack *webm.TrackEntry
+	var vstream *webm.Stream
+	if !*justaudio {
+		vtrack = wm.FindFirstVideoTrack()
+		fduration = vtrack.GetDefaultDuration()
+	}
+	if vtrack != nil {
+		vstream = webm.NewStream(vtrack)
+	}
+	var astream *webm.Stream
+	var atrack *webm.TrackEntry
+	if !*justvideo {
+		atrack = wm.FindFirstAudioTrack()
+	}
+	if atrack != nil {
+		astream = webm.NewStream(atrack)
+	}
+	splitter.Split(astream, vstream)
+	switch {
+	case astream != nil && vstream != nil:
+		go apresent(astream.AudioChannel(), &atrack.Audio)
+		fallthrough
+	case vstream != nil:
+		vpresent(vstream.VideoChannel(), reader)
+	case astream != nil:
+		apresent(astream.AudioChannel(), &atrack.Audio)
+	}
 }
