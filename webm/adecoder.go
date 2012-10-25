@@ -2,7 +2,6 @@ package webm
 
 import (
 	"code.google.com/p/ffvorbis-go/ffvorbis"
-	"log"
 	"time"
 )
 
@@ -50,8 +49,6 @@ func (d *AudioDecoder) Decode(pkt *Packet) {
 		d.emitted += len(smp.Data) / d.chans
 		if !pkt.Invisible {
 			d.Chan <- smp
-		} else {
-			log.Println("Invisible audio packet")
 		}
 	}
 }

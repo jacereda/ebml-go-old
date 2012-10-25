@@ -23,11 +23,12 @@ import (
 	"strconv"
 )
 
+var Verbose bool = false
+
 // ReachedPayloadError is generated when a field tagged with
 // ebmlstop:"1" is reached.
 type ReachedPayloadError struct {
-	First *Element
-	Rest  *Element
+	*Element
 }
 
 func (r ReachedPayloadError) Error() string {
@@ -36,23 +37,18 @@ func (r ReachedPayloadError) Error() string {
 
 // Element represents an EBML-encoded chunk of data.
 type Element struct {
-	R  io.Reader
-	Id uint
+	*limitedReadSeeker
+	Offset int64
+	Id     uint
 }
 
 func (e *Element) String() string {
-	return fmt.Sprintf("{%+v %x}", e.R, e.Id)
-}
-
-// Size returns the size of the element.
-func (e *Element) Size() int64 {
-	lr := e.R.(*io.LimitedReader)
-	return lr.N
+	return fmt.Sprintf("{ReadSeeker: %+v Offset: %+v Id: %x}", e.limitedReadSeeker, e.Offset, e.Id)
 }
 
 // Creates the root element corresponding to the data available in r.
-func RootElement(r io.Reader) (*Element, error) {
-	e := &Element{io.LimitReader(r, math.MaxInt64), 0}
+func RootElement(rs io.ReadSeeker) (*Element, error) {
+	e := &Element{newLimitedReadSeeker(rs, math.MaxInt64), 0, 0}
 	return e, nil
 }
 
@@ -64,17 +60,32 @@ func remaining(x int8) (rem int) {
 	return
 }
 
-func readVint(r io.Reader) (val uint64, err error, rem int) {
-	v := make([]uint8, 1)
-	_, err = io.ReadFull(r, v)
+func parseVint(data []uint8) (val uint64) {
+	for i, l := 0, len(data); i < l; i++ {
+		val <<= 8
+		val += uint64(data[i])
+	}
+	return
+}
+
+func readVintData(r io.Reader) (data []uint8, err error, rem int) {
+	var v [16]uint8
+	_, err = io.ReadFull(r, v[:1])
 	if err == nil {
-		val = uint64(v[0])
-		rem = remaining(int8(val))
-		for i := 0; err == nil && i < rem; i++ {
-			_, err = io.ReadFull(r, v)
-			val <<= 8
-			val += uint64(v[0])
-		}
+		rem = remaining(int8(v[0]))
+		_, err = io.ReadFull(r, v[1:rem+1])
+	}
+	if err == nil {
+		data = v[0 : rem+1]
+	}
+	return
+}
+
+func readVint(r io.Reader) (val uint64, err error, rem int) {
+	var data []uint8
+	data, err, rem = readVintData(r)
+	if err == nil {
+		val = parseVint(data)
 	}
 	return
 }
@@ -86,19 +97,30 @@ func readSize(r io.Reader) (int64, error) {
 
 // Next returns the next child element in an element.
 func (e *Element) Next() (*Element, error) {
-	var ne Element
-	id, err, _ := readVint(e.R)
+	if Verbose {
+		log.Println("next", e)
+	}
+	off, err := e.Seek(0, 1)
+	if err != nil {
+		log.Panic(err)
+	}
+	id, err, _ := readVint(e)
 	if err != nil {
 		return nil, err
 	}
-	var sz int64
-	sz, err = readSize(e.R)
+	sz, err := readSize(e)
 	if err != nil {
 		return nil, err
 	}
-	ne.R = io.LimitReader(e.R, sz)
-	ne.Id = uint(id)
-	return &ne, err
+	ret := &Element{newLimitedReadSeeker(e, sz), off, uint(id)}
+	if Verbose {
+		log.Println("--->", ret)
+	}
+	return ret, err
+}
+
+func (e *Element) Size() int64 {
+	return e.limitedReadSeeker.N
 }
 
 func (e *Element) readUint64() (uint64, error) {
@@ -126,7 +148,7 @@ func (e *Element) readString() (string, error) {
 func (e *Element) ReadData() (d []byte, err error) {
 	sz := e.Size()
 	d = make([]uint8, sz, sz)
-	_, err = io.ReadFull(e.R, d)
+	_, err = io.ReadFull(e, d)
 	return
 }
 
@@ -150,9 +172,7 @@ func (e *Element) skip() (err error) {
 // Unmarshal reads EBML data from r into data. Data must be a pointer
 // to a struct. Fields present in the struct but absent in the stream
 // will just keep their zero value.
-// Returns an error that can be an io.Error or a ReachedPayloadError
-// containing the first element and the the parent element containing
-// the rest of the elements.
+// Returns an error that can be an io.Error or a ReachedPayloadError.
 func (e *Element) Unmarshal(val interface{}) error {
 	return e.readStruct(reflect.Indirect(reflect.ValueOf(val)))
 }
@@ -235,7 +255,12 @@ func (e *Element) readStruct(v reflect.Value) (err error) {
 		} else if i == -1 {
 			err = ne.skip()
 		} else {
-			err = ReachedPayloadError{ne, e}
+			var curr int64
+			curr, err = e.Seek(ne.Offset, 0)
+			if err != nil || curr != ne.Offset {
+				log.Panic(err, curr)
+			}
+			err = ReachedPayloadError{e}
 		}
 	}
 	setDefaults(v)
@@ -280,6 +305,9 @@ func (e *Element) readSlice(v reflect.Value) (err error) {
 		var sl []uint8
 		sl, err = e.ReadData()
 		if err == nil {
+			if !v.CanSet() {
+				log.Panic("can't set ", v, e)
+			}
 			v.Set(reflect.ValueOf(sl))
 		}
 	case reflect.Struct:

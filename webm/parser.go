@@ -7,11 +7,8 @@ package webm
 import (
 	"code.google.com/p/ebml-go/ebml"
 	"io"
-	"log"
 	"time"
 )
-
-const BadTC = time.Duration(-1000000000000000)
 
 type WebM struct {
 	Header  `ebml:"1a45dfa3"`
@@ -49,8 +46,8 @@ type Header struct {
 }
 
 type Segment struct {
-	cluster            Cluster `ebml:"1F43B675" ebmlstop:"1"`
-	SeekHead           `ebml:"114D9B74"`
+	cluster            []Cluster `ebml:"1F43B675" ebmlstop:"1"`
+	SeekHead           `ebml:"114D9B74" ebmlstop:"1"`
 	SegmentInformation `ebml:"1549A966"`
 	Tracks             `ebml:"1654AE6B"`
 	Cues               `ebml:"1C53BB6B"`
@@ -76,6 +73,10 @@ type TrackEntry struct {
 	CodecName       string `ebml:"258688"`
 	Video           `ebml:"E0"`
 	Audio           `ebml:"E1"`
+}
+
+func (t *TrackEntry) GetDefaultDuration() time.Duration {
+	return time.Duration(t.DefaultDuration)
 }
 
 func (t *TrackEntry) IsVideo() bool {
@@ -114,7 +115,7 @@ type SeekHead struct {
 
 type Seek struct {
 	SeekID       []byte `ebml:"53AB"`
-	SeekPosition uint64 `ebml:"53AC"`
+	SeekPosition int64  `ebml:"53AC"`
 }
 
 type SegmentInformation struct {
@@ -125,20 +126,21 @@ type SegmentInformation struct {
 	WritingApp    string  `ebml:"5741"`
 }
 
-func (s *SegmentInformation) GetDuration() float64 {
-	return s.Duration * float64(s.TimecodeScale) / 1000000000
+func (s *SegmentInformation) GetDuration() time.Duration {
+	return time.Second * time.Duration(
+		s.Duration*float64(s.TimecodeScale)/1000000000)
 }
 
 type Cluster struct {
-	simpleBlock []byte       `ebml:"A3" ebmlstop:"1"`
-	Timecode    uint         `ebml:"E7"`
-	PrevSize    uint         `ebml:"AB"`
-	Position    uint         `ebml:"A7"`
-	BlockGroup  []BlockGroup `ebml:"A0"`
+	simpleBlock []byte     `ebml:"A3" ebmlstop:"1"`
+	Timecode    uint       `ebml:"E7"`
+	PrevSize    uint       `ebml:"AB"`
+	Position    uint       `ebml:"A7"`
+	BlockGroup  BlockGroup `ebml:"A0" ebmlstop:"1"`
 }
 
 type BlockGroup struct {
-	block          []byte   `ebml:"A1"`
+	Block          []byte   `ebml:"A1"`
 	BlockDuration  uint     `ebml:"9B"`
 	ReferenceBlock int      `ebml:"FB"`
 	CodecState     []byte   `ebml:"A4"`
@@ -158,183 +160,49 @@ type Cues struct {
 }
 
 type CuePoint struct {
-	CueTime           uint                `ebml:"B3"`
+	CueTime           int64               `ebml:"B3"`
 	CueTrackPositions []CueTrackPositions `ebml:"B7"`
 }
 
 type CueTrackPositions struct {
-	CueTrack           uint `ebml:"F7"`
-	CueClusterPosition uint `ebml:"F1"`
-	CueBlockNumber     uint `ebml:"5378" ebmldef:"1"`
+	CueTrack           uint  `ebml:"F7"`
+	CueClusterPosition int64 `ebml:"F1"`
+	CueBlockNumber     uint  `ebml:"5378" ebmldef:"1"`
 }
 
-func remaining(x int8) (rem int) {
-	for x > 0 {
-		rem++
-		x += x
-	}
-	return
-}
-
-func laceSize(v []byte) (val int, rem int) {
-	val = int(v[0])
-	rem = remaining(int8(val))
-	for i, l := 1, rem+1; i < l; i++ {
-		val <<= 8
-		val += int(v[i])
-	}
-	val &= ^(128 << uint(rem*8-rem))
-	return
-}
-
-func laceDelta(v []byte) (val int, rem int) {
-	val, rem = laceSize(v)
-	val -= (1 << (uint(7*(rem+1) - 1))) - 1
-	return
-}
-
-func sendLaces(p *Packet, d []byte, sz []int, ch chan<- Packet) {
-	var curr int
-	for i, l := 0, len(sz); i < l; i++ {
-		if sz[i] != 0 {
-			p.Data = d[curr : curr+sz[i]]
-			ch <- *p
-			curr += sz[i]
-			p.Timecode = BadTC
-		}
-	}
-	p.Data = d[curr:]
-	ch <- *p
-}
-
-func parseXiphSizes(d []byte) (sz []int, curr int) {
-	laces := int(uint(d[4]))
-	sz = make([]int, laces)
-	curr = 5
-	for i := 0; i < laces; i++ {
-		for d[curr] == 255 {
-			sz[i] += 255
-			curr++
-		}
-		sz[i] += int(uint(d[curr]))
-		curr++
-	}
-	return
-}
-
-func parseFixedSizes(d []byte) (sz []int, curr int) {
-	laces := int(uint(d[4]))
-	curr = 5
-	fsz := len(d[curr:]) / (laces + 1)
-	sz = make([]int, laces)
-	for i := 0; i < laces; i++ {
-		sz[i] = fsz
-	}
-	return
-}
-
-func parseEBMLSizes(d []byte) (sz []int, curr int) {
-	laces := int(uint(d[4]))
-	sz = make([]int, laces)
-	curr = 5
-	var rem int
-	sz[0], rem = laceSize(d[curr:])
-	for i := 1; i < laces; i++ {
-		curr += rem + 1
-		var dsz int
-		dsz, rem = laceDelta(d[curr:])
-		sz[i] = sz[i-1] + dsz
-	}
-	curr += rem + 1
-	return
-}
-
-func sendBlock(hdr []byte, tbase time.Duration, ch chan<- Packet) {
-	var p Packet
-	p.TrackNumber = uint(hdr[0]) & 0x7f
-	p.Timecode = tbase + time.Millisecond*time.Duration(
-		uint(hdr[1])<<8+uint(hdr[2]))
-	p.Invisible = (hdr[3] & 8) != 0
-	p.Keyframe = (hdr[3] & 0x80) != 0
-	p.Discardable = (hdr[3] & 1) != 0
-	if p.Discardable {
-		log.Println("Discardable packet")
-	}
-	lacing := (hdr[3] >> 1) & 3
-	switch lacing {
-	case 0:
-		p.Data = hdr[4:]
-		ch <- p
-	case 1:
-		sz, curr := parseXiphSizes(hdr)
-		sendLaces(&p, hdr[curr:], sz, ch)
-	case 2:
-		sz, curr := parseFixedSizes(hdr)
-		sendLaces(&p, hdr[curr:], sz, ch)
-	case 3:
-		sz, curr := parseEBMLSizes(hdr)
-		sendLaces(&p, hdr[curr:], sz, ch)
-	}
-}
-
-func sendPackets(e *ebml.Element, rest *ebml.Element,
-	tbase time.Duration, ch chan<- Packet) {
-	var err error
-	curr := 0
-	for err == nil {
-		var hdr []byte
-		hdr, err = e.ReadData()
-		if err != nil {
-			log.Println(err)
-		}
-		if err == nil && e.Id == 163 && len(hdr) > 4 {
-			sendBlock(hdr, tbase, ch)
-		} else {
-			log.Println("Unexpected packet")
-		}
-		e, err = rest.Next()
-		curr++
-	}
-}
-
-func parseClusters(e *ebml.Element, rest *ebml.Element, ch chan<- Packet) {
-	var err error
-	for err == nil && e != nil {
-		var c Cluster
-		err = e.Unmarshal(&c)
-		if err != nil && err.Error() == "Reached payload" {
-			sendPackets(err.(ebml.ReachedPayloadError).First,
-				err.(ebml.ReachedPayloadError).Rest,
-				time.Millisecond*time.Duration(c.Timecode),
-				ch)
-		}
-		e, err = rest.Next()
-	}
-	close(ch)
-}
-
-func Parse(r io.Reader, m *WebM) (ch <-chan Packet, err error) {
+func Parse(r io.ReadSeeker, m *WebM) (wr *Reader, err error) {
 	var e *ebml.Element
 	e, err = ebml.RootElement(r)
 	if err == nil {
 		err = e.Unmarshal(m)
 		if err != nil && err.Error() == "Reached payload" {
-			bch := make(chan Packet, 2)
-			go parseClusters(err.(ebml.ReachedPayloadError).First,
-				err.(ebml.ReachedPayloadError).Rest,
-				bch)
-			ch = bch
+			segment := err.(ebml.ReachedPayloadError).Element
+			sh, _ := segment.Next()
+			sh.Unmarshal(&m.SeekHead)
+			pos := m.cuesPosition()
+			if pos > 0 {
+				curr, _ := segment.Seek(0, 1)
+				segment.Seek(pos+sh.Offset, 0)
+				ce, _ := segment.Next()
+				ce.Unmarshal(&m.Segment.Cues)
+				segment.Seek(curr, 0)
+			}
+			segment.Unmarshal(&m.Segment)
+			payload := err.(ebml.ReachedPayloadError).Element
+			wr = newReader(payload,
+				m.Segment.Cues.CuePoint, sh.Offset)
 			err = nil
 		}
 	}
 	return
 }
 
-type Packet struct {
-	Data        []byte
-	Timecode    time.Duration
-	TrackNumber uint
-	Invisible   bool
-	Keyframe    bool
-	Discardable bool
+func (m *WebM) cuesPosition() int64 {
+	s := m.Segment.SeekHead.Seek
+	for i, l := 0, len(s); i < l; i++ {
+		if s[i].SeekID[0] == 0x1c {
+			return s[i].SeekPosition
+		}
+	}
+	return -1
 }
