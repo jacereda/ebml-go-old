@@ -165,7 +165,7 @@ func (e *Element) readFloat() (val float64, err error) {
 }
 
 func (e *Element) skip() (err error) {
-	_, err = e.ReadData()
+	_, err = e.Seek(e.Size(), 1)
 	return
 }
 
