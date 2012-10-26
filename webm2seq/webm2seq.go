@@ -78,6 +78,10 @@ func write(ch <-chan webm.Frame) {
 
 func main() {
 	flag.Parse()
+	if *in == "" {
+		flag.Usage()
+		return
+	}
 	for i := 0; i < *encoders; i++ {
 		ch := make(chan encjob, 0)
 		chans = append(chans, ch)
@@ -88,12 +92,12 @@ func main() {
 	r, err := os.Open(*in)
 	defer r.Close()
 	if err != nil {
-		log.Panic("Unable to open file " + *in)
+		log.Fatalf("Unable to open file '%s'", *in)
 	}
 	var wm webm.WebM
 	reader, err := webm.Parse(r, &wm)
 	if err != nil {
-		log.Panic("Unable to parse file:", err)
+		log.Fatal("Unable to parse file: ", err)
 	}
 	vtrack := wm.FindFirstVideoTrack()
 	vstream := webm.NewStream(vtrack)
