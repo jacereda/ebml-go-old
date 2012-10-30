@@ -142,7 +142,11 @@ func (e *Element) readUint() (uint, error) {
 
 func (e *Element) readString() (string, error) {
 	s, err := e.ReadData()
-	return string(s), err
+	sl := len(s)
+	for sl > 0 && s[sl-1] == 0 {
+		sl--
+	}
+	return string(s[:sl]), err
 }
 
 func (e *Element) ReadData() (d []byte, err error) {
